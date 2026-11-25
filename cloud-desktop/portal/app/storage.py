@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
 from .config import config
 
@@ -44,10 +44,18 @@ def home_dir(username: str, create: bool = True) -> Path:
     return path
 
 
+def _host_path(*parts: str) -> str:
+    """Шлях так, як його бачить Docker: на Windows (Docker Desktop) — C:\\…, інакше — POSIX."""
+    root = config.host_storage_root
+    cls: type[PurePath] = PureWindowsPath if (os.name == "nt" or re.match(r"^[A-Za-z]:[\\/]", root)) \
+        else PurePosixPath
+    return str(cls(root).joinpath(*parts))
+
+
 def host_home_dir(username: str) -> str:
     """Шлях до папки студента так, як його бачить Docker-демон на хості."""
     home_dir(username)
-    return str(PurePosixPath(config.host_storage_root) / "home" / _check_username(username))
+    return _host_path("home", _check_username(username))
 
 
 def safe_path(base: Path, rel: str) -> Path:
@@ -154,8 +162,7 @@ def submission_dir(assignment_id: int, username: str) -> Path:
 
 
 def host_submission_dir(assignment_id: int, username: str) -> str:
-    return str(PurePosixPath(config.host_storage_root) / "submissions" / str(int(assignment_id))
-               / _check_username(username))
+    return _host_path("submissions", str(int(assignment_id)), _check_username(username))
 
 
 def copy_submission(username: str, assignment_id: int, rel_paths: list[str]) -> list[str]:

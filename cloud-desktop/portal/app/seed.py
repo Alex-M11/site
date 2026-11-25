@@ -53,12 +53,15 @@ def seed_demo(db: Session) -> None:
                  description="Kali Linux з nmap, Wireshark і Burp Suite. Скануйте лише навчальні цілі!",
                  image=f"kasmweb/kali-rolling-desktop:{tag}", cpu=2, memory_mb=3072, groups=[kb]),
         Template(name="Програмування", subject="Основи програмування", os_family="vscode",
-                 description="VS Code, Python 3, GCC, Node.js і Git.",
-                 image="college/dev-desktop:latest", cpu=1, memory_mb=2048, groups=[kn]),
-        Template(name="SQL", subject="Бази даних", os_family="mysql",
-                 description="Ubuntu з MySQL Server і DBeaver. Користувач MySQL: student / student.",
-                 image="college/mysql-desktop:latest", cpu=1, memory_mb=2048, groups=[kn, kb]),
+                 description="VS Code для програмування." if config.standalone else "VS Code, Python 3, GCC, Node.js і Git.",
+                 image=f"kasmweb/vs-code:{tag}" if config.standalone else "college/dev-desktop:latest",
+                 cpu=1, memory_mb=2048, groups=[kn]),
     ]
+    if not config.standalone:   # образ з MySQL збирається лише на Linux-сервері
+        templates.append(Template(
+            name="SQL", subject="Бази даних", os_family="mysql",
+            description="Ubuntu з MySQL Server і DBeaver. Користувач MySQL: student / student.",
+            image="college/mysql-desktop:latest", cpu=1, memory_mb=2048, groups=[kn, kb]))
     for t in templates:
         t.created_by = teacher
     db.add_all(templates)
@@ -66,7 +69,7 @@ def seed_demo(db: Session) -> None:
     db.add(Assignment(title="Лабораторна 1. SELECT і JOIN",
                       description="Створіть базу college, таблиці students і groups, напишіть 5 запитів. "
                                   "Здайте файл lab1.sql з папки «Мої файли».",
-                      group=kn, template=templates[3], teacher=teacher, due_at=utcnow() + timedelta(days=7)))
+                      group=kn, template=templates[3] if len(templates) > 3 else None, teacher=teacher, due_at=utcnow() + timedelta(days=7)))
     db.add(Assignment(title="Лабораторна 1. Сканування мережі",
                       description="Проскануйте дозволений навчальний хост scanme.nmap.org за допомогою nmap "
                                   "(-sV, -O) і здайте звіт report.txt. Сканувати інші адреси заборонено.",

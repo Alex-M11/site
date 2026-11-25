@@ -15,6 +15,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .config import config
 from .db import create_schema, db_session, init_engine
+from .drivers import DriverError
 from .deps import CSRF_HEADER, CSRF_VALUE, user_from_request
 from .routers import admin, assignments, auth, files, sessions, teacher, templates
 from .seed import ensure_admin, seed_demo
@@ -95,6 +96,12 @@ async def csrf_and_headers(request: Request, call_next):
     return response
 
 
+@app.exception_handler(DriverError)
+async def driver_error(_request: Request, exc: DriverError):
+    # Docker недоступний або відмовив — пояснення замість «Internal Server Error».
+    return JSONResponse({"detail": str(exc)}, status_code=503)
+
+
 for r in (auth.router, templates.router, sessions.router, files.router, assignments.router,
           teacher.router, admin.router):
     app.include_router(r)
@@ -114,16 +121,19 @@ def desktop_page(session_id: int):
 
 @app.get("/healthz", include_in_schema=False)
 def healthz():
-    return {"ok": True, "driver": config.driver}
+    return {"ok": True, "driver": config.driver, "version": app.version}
 
 
-@app.get("/desktop/{session_id}/", include_in_schema=False)
-@app.get("/desktop/{session_id}-view/", include_in_schema=False)
-def fake_desktop(session_id: int):
-    """У продакшені /desktop/ обробляє Nginx. Цей маршрут — заглушка для fake-режиму."""
-    if config.driver != "fake":
-        raise HTTPException(404)
-    return HTMLResponse((STATIC / "fake-desktop.html").read_text(encoding="utf-8"))
+if config.driver == "fake":
+    @app.get("/desktop/{session_id}/", include_in_schema=False)
+    @app.get("/desktop/{session_id}-view/", include_in_schema=False)
+    def fake_desktop(session_id: int):
+        """Демо-режим без Docker: замість справжнього столу — заглушка."""
+        return HTMLResponse((STATIC / "fake-desktop.html").read_text(encoding="utf-8"))
+elif config.builtin_proxy:
+    # Без Nginx (Windows-версія): портал сам передає сторінку й WebSocket KasmVNC.
+    from .desktop_proxy import router as desktop_proxy_router
+    app.include_router(desktop_proxy_router)
 
 
 def _is_local(request: Request) -> bool:

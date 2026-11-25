@@ -50,6 +50,10 @@ class Config:
     demo_seed: bool = field(default_factory=lambda: _bool("CD_DEMO_SEED", False))
     image_tag: str = field(default_factory=lambda: os.environ.get("CD_KASM_TAG", "1.17.0"))
     idle_check_seconds: int = field(default_factory=lambda: _int("CD_IDLE_CHECK_SECONDS", 60))
+    # Автономна версія на одному ПК (Windows .exe): лише готові образи, без власних college/*.
+    standalone: bool = field(default_factory=lambda: _bool("CD_STANDALONE", False))
+    # Портал сам проксіює /desktop/ (коли немає Nginx — напр. Windows-версія).
+    builtin_proxy: bool = field(default_factory=lambda: _bool("CD_BUILTIN_PROXY", False))
     api_docs: bool = field(default_factory=lambda: _bool("CD_API_DOCS", True))
     background_tasks: bool = field(default_factory=lambda: _bool("CD_BACKGROUND_TASKS", True))
     max_upload_mb: int = field(default_factory=lambda: _int("CD_MAX_UPLOAD_MB", 200))

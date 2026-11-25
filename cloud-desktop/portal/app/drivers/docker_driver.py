@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import functools
 import http.client
 import logging
 import ssl
@@ -18,6 +19,21 @@ MANAGED_LABEL = "cloud-desktop.managed"
 CHECK_LABEL = "cloud-desktop.check"
 BRIDGE_NAME = "cd-desktops"
 MAX_CHECK_OUTPUT = 20_000
+
+
+DOCKER_DOWN = ("Docker не запущено або недоступний. Запустіть Docker (на Windows — Docker Desktop) "
+               "і спробуйте ще раз.")
+
+
+def _docker_down_guard(fn):
+    """Якщо Docker не відповідає взагалі — зрозуміла помилка замість 500."""
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return fn(self, *args, **kwargs)
+        except RequestsConnectionError as exc:
+            raise DriverError(DOCKER_DOWN) from exc
+    return wrapper
 
 
 class DockerDriver(DesktopDriver):
@@ -248,3 +264,8 @@ class DockerDriver(DesktopDriver):
         info = self.client.info()
         return {"containers_running": info.get("ContainersRunning"), "images": info.get("Images"),
                 "docker_version": info.get("ServerVersion")}
+
+
+for _name in ("create", "start", "stop", "pause", "unpause", "remove", "status", "endpoint", "disk_usage",
+              "list_managed", "run_check", "ensure_network", "ensure_image", "server_stats"):
+    setattr(DockerDriver, _name, _docker_down_guard(getattr(DockerDriver, _name)))

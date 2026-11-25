@@ -6,3 +6,6 @@ portal/data/
 __pycache__/
 *.pyc
 .pytest_cache/
+portal/dist/
+portal/build/
+portal/release/

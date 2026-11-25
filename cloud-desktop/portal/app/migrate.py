@@ -4,10 +4,13 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from alembic import command
-from alembic.config import Config
-from sqlalchemy import inspect
-from sqlalchemy.engine import Engine
+# Alembic реєструє плагіни (і пише про це в лог) вже під час імпорту — приглушуємо заздалегідь.
+logging.getLogger("alembic.runtime.plugins").setLevel(logging.WARNING)
+
+from alembic import command  # noqa: E402
+from alembic.config import Config  # noqa: E402
+from sqlalchemy import inspect  # noqa: E402
+from sqlalchemy.engine import Engine  # noqa: E402
 
 log = logging.getLogger("cloud_desktop.migrate")
 MIGRATIONS = Path(__file__).parent / "migrations"

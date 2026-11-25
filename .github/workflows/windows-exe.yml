@@ -1,0 +1,104 @@
+# Збірка Windows-версії «Хмарного робочого столу» (CloudDesktop.exe) і її перевірка на справжньому Windows.
+# Готовий файл — у розділі Actions → цей запуск → Artifacts → CloudDesktop-windows.
+name: Windows .exe
+
+on:
+  push:
+    paths:
+      - "cloud-desktop/portal/**"
+      - ".github/workflows/windows-exe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Автотести (Linux)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloud-desktop/portal
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+
+  windows-exe:
+    name: Збірка і перевірка .exe (Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: cloud-desktop/portal
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Залежності
+        run: pip install -r windows/requirements-windows.txt
+      - name: Збірка PyInstaller
+        run: |
+          python windows/make_icon.py
+          pyinstaller --noconfirm --clean windows/CloudDesktop.spec
+          Get-Item dist/CloudDesktop.exe | Format-List Name, Length
+
+      - name: Перевірка запуску .exe (демо-режим, як подвійний клік)
+        run: |
+          $exe = Resolve-Path dist/CloudDesktop.exe
+          $proc = Start-Process -FilePath $exe -ArgumentList "--demo", "--no-browser", "--port", "8123" -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 90; $i++) {
+            try { $h = Invoke-RestMethod http://127.0.0.1:8123/healthz -TimeoutSec 2; if ($h.ok) { $ok = $true; break } } catch {}
+            Start-Sleep -Seconds 1
+          }
+          $data = Join-Path $env:LOCALAPPDATA "CloudDesktop"
+          Write-Host "--- portal.log"; Get-Content (Join-Path $data "portal.log") -ErrorAction SilentlyContinue | Select-Object -Last 40
+          if (-not $ok) { throw "Портал не відповів за 90 с" }
+          Write-Host "healthz: $($h | ConvertTo-Json -Compress)"
+
+          # вхід адміністратором (пароль згенерував запускач) і каталог середовищ
+          $pw = (Get-Content (Join-Path $data "admin-password.txt") -Raw).Trim()
+          $s = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+          $hdr = @{ "X-Requested-With" = "cloud-desktop" }
+          $login = Invoke-RestMethod http://127.0.0.1:8123/api/auth/login -Method Post -WebSession $s -Headers $hdr `
+                     -ContentType "application/json" -Body (@{ username = "admin"; password = $pw } | ConvertTo-Json)
+          Write-Host "увійшов: $($login.user.username) ($($login.user.role))"
+          $tpl = Invoke-RestMethod http://127.0.0.1:8123/api/templates/manage -WebSession $s
+          Write-Host "шаблонів: $($tpl.Count) — $(($tpl | ForEach-Object { $_.name }) -join ', ')"
+          if ($tpl.Count -lt 3) { throw "Немає демо-шаблонів" }
+
+          # студент запускає стіл (у демо-режимі — заглушка через той самий проксі)
+          $st = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+          Invoke-RestMethod http://127.0.0.1:8123/api/auth/login -Method Post -WebSession $st -Headers $hdr `
+            -ContentType "application/json" -Body (@{ username = "student1"; password = "Student123" } | ConvertTo-Json) | Out-Null
+          $t = (Invoke-RestMethod http://127.0.0.1:8123/api/templates -WebSession $st)[0]
+          $sess = Invoke-RestMethod http://127.0.0.1:8123/api/sessions -Method Post -WebSession $st -Headers $hdr `
+                    -ContentType "application/json" -Body (@{ template_id = $t.id } | ConvertTo-Json)
+          $page = Invoke-WebRequest "http://127.0.0.1:8123/desktop/$($sess.id)/" -WebSession $st -UseBasicParsing
+          Write-Host "стіл $($sess.id): $($sess.status), сторінка столу HTTP $($page.StatusCode)"
+          $cred = Get-ChildItem $data -Filter "*.txt" | ForEach-Object { $_.Name }
+          Write-Host "файли в даних: $($cred -join ', ')"
+
+          # повторний запуск не створює другий екземпляр
+          $p2 = Start-Process -FilePath $exe -ArgumentList "--no-browser" -PassThru -Wait
+          Write-Host "повторний запуск завершився з кодом $($p2.ExitCode) (портал уже працює)"
+          if ($p2.ExitCode -ne 0) { throw "Повторний запуск мав просто відкрити наявний портал" }
+
+          Stop-Process -Id $proc.Id -Force
+          Write-Host "OK"
+
+      - name: Архів для завантаження
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item dist/CloudDesktop.exe release/
+          Copy-Item windows/README.md release/README.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CloudDesktop-windows
+          path: cloud-desktop/portal/release/
+          retention-days: 30

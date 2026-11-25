@@ -12,13 +12,16 @@ from .models import Setting
 
 def default_image_catalog() -> list[dict]:
     tag = config.image_tag
-    return [
+    catalog = [
         {"image": f"kasmweb/ubuntu-jammy-desktop:{tag}", "label": "Ubuntu 22.04 (робочий стіл)", "os": "ubuntu"},
         {"image": f"kasmweb/kali-rolling-desktop:{tag}", "label": "Kali Linux", "os": "kali"},
         {"image": f"kasmweb/vs-code:{tag}", "label": "VS Code", "os": "vscode"},
         {"image": "college/dev-desktop:latest", "label": "Програмування (VS Code, Python, C/C++, Node.js)", "os": "vscode"},
         {"image": "college/mysql-desktop:latest", "label": "Ubuntu + MySQL", "os": "mysql"},
     ]
+    if config.standalone:   # образи college/* збираються на Linux-сервері
+        catalog = [i for i in catalog if not i["image"].startswith("college/")]
+    return catalog
 
 
 DEFAULTS: dict[str, Any] = {

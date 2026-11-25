@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import re
+from dataclasses import dataclass
 from datetime import timedelta
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
@@ -145,20 +146,25 @@ def delete(session_id: int, request: Request, user: User = Depends(current_user)
 DESKTOP_URI = re.compile(r"^/desktop/(\d+)(-view)?(/|$)")
 
 
-@router.get("/api/proxy/auth", include_in_schema=False)
-def proxy_auth(request: Request, response: Response, db: Session = Depends(get_db)):
-    """Nginx викликає цей endpoint перед кожним запитом до /desktop/<id>/.
+@dataclass
+class DesktopAccess:
+    upstream: str          # host:port KasmVNC
+    authorization: str     # "Basic …" для KasmVNC
 
-    200 → у заголовках адреса контейнера і Basic-авторизація KasmVNC (пароль ніколи не потрапляє в браузер).
-    401/403 → Nginx відмовляє у доступі.
+
+def authorize_desktop(conn, db: Session, uri: str) -> DesktopAccess:
+    """Чи може користувач (з cookie запиту conn) відкрити /desktop/<id>[-view]/…
+
+    Спільна перевірка для Nginx (auth_request) і для вбудованого проксі (Windows-версія без Nginx).
+    conn — Request або WebSocket. Кидає HTTPException 401/403/409.
     """
-    match = DESKTOP_URI.match(request.headers.get("x-original-uri", ""))
+    match = DESKTOP_URI.match(uri)
     if not match:
         raise HTTPException(status.HTTP_403_FORBIDDEN)
-    user = user_from_request(request, db)
+    user = user_from_request(conn, db)
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED)
-    if must_change_now(request, user):
+    if must_change_now(conn, user):
         raise HTTPException(status.HTTP_403_FORBIDDEN)
     sess = db.get(DesktopSession, int(match.group(1)))
     if sess is None or not can_manage_student(user, sess.user):
@@ -168,17 +174,28 @@ def proxy_auth(request: Request, response: Response, db: Session = Depends(get_d
     view_only = match.group(2) is not None
     if sess.user_id == user.id:
         touch(db, sess)
-    elif "websockify" in request.headers.get("x-original-uri", ""):
+    elif "websockify" in uri:
         # Викладач/адмін підключився до чужого столу — фіксуємо в журналі, студент бачить попередження.
         mode = "view" if view_only else "control"
         mark_helper(sess, user, mode)
         audit(db, "session_connect_helper", user,
               f"до столу {sess.user.username} ({sess.template.name}), "
-              f"{'перегляд' if view_only else 'керування'}", request)
+              f"{'перегляд' if view_only else 'керування'}", conn)
         db.commit()
     # kasm_viewer — вбудований в образи Kasm користувач лише для перегляду (той самий пароль).
     vnc_user = config.desktop_viewer if view_only else config.desktop_user
     credentials = base64.b64encode(f"{vnc_user}:{sess.vnc_password}".encode()).decode()
-    response.headers["X-Desktop-Upstream"] = f"{sess.host}:{sess.port}"
-    response.headers["X-Desktop-Auth"] = f"Basic {credentials}"
+    return DesktopAccess(f"{sess.host}:{sess.port}", f"Basic {credentials}")
+
+
+@router.get("/api/proxy/auth", include_in_schema=False)
+def proxy_auth(request: Request, response: Response, db: Session = Depends(get_db)):
+    """Nginx викликає цей endpoint перед кожним запитом до /desktop/<id>/.
+
+    200 → у заголовках адреса контейнера і Basic-авторизація KasmVNC (пароль ніколи не потрапляє в браузер).
+    401/403 → Nginx відмовляє у доступі.
+    """
+    access = authorize_desktop(request, db, request.headers.get("x-original-uri", ""))
+    response.headers["X-Desktop-Upstream"] = access.upstream
+    response.headers["X-Desktop-Auth"] = access.authorization
     return {"ok": True}

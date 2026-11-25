@@ -10,9 +10,15 @@ def get_driver() -> DesktopDriver:
     global _driver
     if _driver is None:
         if config.driver == "docker":
-            from .docker_driver import DockerDriver
-            _driver = DockerDriver(config.desktop_network, config.desktop_port,
-                                   config.desktop_bind_host, config.container_disk_size)
+            import docker
+
+            from .docker_driver import DOCKER_DOWN, DockerDriver
+            try:
+                _driver = DockerDriver(config.desktop_network, config.desktop_port,
+                                       config.desktop_bind_host, config.container_disk_size)
+            except docker.errors.DockerException as exc:
+                # Не кешуємо: щойно Docker запуститься, наступний запит під'єднається.
+                raise DriverError(DOCKER_DOWN) from exc
         elif config.driver == "fake":
             from .fake_driver import FakeDriver
             _driver = FakeDriver()

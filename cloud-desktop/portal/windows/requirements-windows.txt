@@ -1,0 +1,5 @@
+-r ../requirements.txt
+pyinstaller>=6.10
+pystray>=0.19        # значок у треї
+pillow>=10           # малювання значка
+pywin32>=306         # Docker SDK на Windows спілкується з Docker Desktop через named pipe
