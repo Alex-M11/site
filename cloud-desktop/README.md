@@ -62,9 +62,12 @@ cloud-desktop/
 │   │   ├── checks.py         автоперевірка зданих робіт
 │   │   ├── oidc.py           вхід через пошту коледжу (OpenID Connect)
 │   │   ├── cli.py            службові команди (скидання пароля, новий адміністратор)
+│   │   ├── launcher.py       запускач Windows-версії (трей, Docker Desktop або демо-режим)
+│   │   ├── desktop_proxy.py  вбудований проксі столів (коли немає Nginx)
 │   │   ├── drivers/          docker_driver.py (KasmVNC-контейнери), fake_driver.py (без Docker)
 │   │   ├── routers/          API: auth, templates, sessions (+ /api/proxy/auth), files, assignments, teacher, admin
 │   │   └── static/           інтерфейс (HTML/CSS/JS без фреймворків)
+│   ├── windows/              збірка CloudDesktop.exe (PyInstaller), інструкція для Windows
 │   └── tests/                автотести (pytest, 62 тести)
 ├── nginx/templates/          конфіг Nginx (HTTPS, проксі столів, WebSocket)
 ├── images/                   власні образи: dev-desktop (VS Code + мови), mysql-desktop (MySQL + DBeaver)
@@ -87,6 +90,13 @@ CD_DEMO_SEED=1 CD_ADMIN_PASSWORD=Admin12345 uvicorn app.main:app --reload
 Демо-акаунти: `admin / Admin12345`, `teacher / Teacher123`, `student1`…`student3 / Student123`.
 
 Тести: `cd portal && python -m pytest -q`.
+
+## Windows-версія (CloudDesktop.exe)
+
+Для знайомства, демонстрації на захисті або невеликого класу — портал одним файлом, без встановлення:
+двічі клацніть `CloudDesktop.exe`, відкриється браузер, а біля годинника з'явиться значок ☁.
+Якщо встановлено Docker Desktop — запускаються справжні Ubuntu, Kali і VS Code; якщо ні — демо-режим із заглушкою.
+Готовий файл збирає GitHub Actions (Actions → «Windows .exe» → Artifacts), інструкція — [portal/windows/README.md](portal/windows/README.md).
 
 ## Розгортання на сервері коледжу
 
