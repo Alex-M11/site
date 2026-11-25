@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import io
 import os
 import re
 import shutil
@@ -139,6 +140,50 @@ def write_upload(base: Path, rel: str, filename: str, stream, quota_bytes: int) 
             tmp.unlink()
     _chown(target)
     return target
+
+
+MAX_TEXT_BYTES = 1024 * 1024
+
+
+def read_text(base: Path, rel: str) -> str:
+    target = safe_path(base, rel)
+    if not target.is_file():
+        raise StorageError("Файл не знайдено")
+    if target.stat().st_size > MAX_TEXT_BYTES:
+        raise StorageError("Файл завеликий для текстового редактора (понад 1 МБ)")
+    data = target.read_bytes()
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise StorageError("Це не текстовий файл") from None
+
+
+def write_text(base: Path, rel: str, content: str, quota_bytes: int) -> Path:
+    rel = (rel or "").replace("\\", "/").strip("/")
+    parent, _, name = rel.rpartition("/")
+    data = content.encode("utf-8")
+    if len(data) > MAX_TEXT_BYTES:
+        raise StorageError("Текст завеликий (понад 1 МБ)")
+    return write_upload(base, parent, name, io.BytesIO(data), quota_bytes)
+
+
+def move_path(base: Path, src_rel: str, dst_rel: str) -> Path:
+    """Перейменувати або перемістити файл чи папку в межах «Моїх файлів»."""
+    src = safe_path(base, src_rel)
+    if src == base.resolve() or not src.exists():
+        raise StorageError("Файл не знайдено")
+    dst_rel = (dst_rel or "").replace("\\", "/").strip("/")
+    parent_rel, _, name = dst_rel.rpartition("/")
+    parent = safe_path(base, parent_rel)
+    if not parent.is_dir():
+        raise StorageError("Папку призначення не знайдено")
+    dst = parent / clean_name(name)
+    if dst.exists():
+        raise StorageError("Файл або папка з такою назвою вже існує")
+    if src.is_dir() and (dst == src or src in dst.parents):
+        raise StorageError("Не можна перемістити папку саму в себе")
+    os.replace(src, dst)
+    return dst
 
 
 def delete_path(base: Path, rel: str) -> None:

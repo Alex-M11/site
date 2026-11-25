@@ -12,7 +12,10 @@ from ..db import get_db
 from ..deps import current_user
 from ..models import User
 from ..quota import measure, quota_bytes, state as quota_state
-from ..storage import StorageError, delete_path, dir_size, home_dir, list_dir, make_dir, safe_path, write_upload
+from ..storage import (
+    StorageError, delete_path, dir_size, home_dir, list_dir, make_dir, move_path, read_text, safe_path,
+    write_text, write_upload,
+)
 
 router = APIRouter(prefix="/api/files", tags=["files"])
 
@@ -20,6 +23,16 @@ router = APIRouter(prefix="/api/files", tags=["files"])
 class MkdirIn(BaseModel):
     path: str = ""
     name: str
+
+
+class TextIn(BaseModel):
+    path: str
+    content: str = ""
+
+
+class MoveIn(BaseModel):
+    path: str
+    to: str
 
 
 def _err(exc: Exception) -> HTTPException:
@@ -86,3 +99,34 @@ def remove(path: str, request: Request, user: User = Depends(current_user), db: 
     measure(user)
     db.commit()
     return {"ok": True}
+
+
+@router.get("/content")
+def get_text(path: str, user: User = Depends(current_user)):
+    """Вміст текстового файлу (для редактора в демо-столі)."""
+    try:
+        return {"path": path.strip("/"), "content": read_text(home_dir(user.username), path)}
+    except StorageError as exc:
+        raise _err(exc) from exc
+
+
+@router.put("/content")
+def put_text(data: TextIn, request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    base = home_dir(user.username)
+    try:
+        target = write_text(base, data.path, data.content, quota_bytes(db, user))
+    except StorageError as exc:
+        raise _err(exc) from exc
+    audit(db, "file_save", user, str(target.relative_to(base.resolve())), request)
+    measure(user)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/move")
+def move(data: MoveIn, user: User = Depends(current_user)):
+    try:
+        target = move_path(home_dir(user.username), data.path, data.to)
+    except StorageError as exc:
+        raise _err(exc) from exc
+    return {"ok": True, "path": str(target.relative_to(home_dir(user.username).resolve()))}
