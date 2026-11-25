@@ -1,0 +1,87 @@
+"""Персональне сховище «Мої файли»: ті самі файли видно всередині кожного столу студента."""
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from ..audit import audit
+from ..config import config
+from ..db import get_db
+from ..deps import current_user
+from ..models import User
+from ..settings_store import get_setting
+from ..storage import StorageError, delete_path, dir_size, home_dir, list_dir, make_dir, safe_path, write_upload
+
+router = APIRouter(prefix="/api/files", tags=["files"])
+
+
+class MkdirIn(BaseModel):
+    path: str = ""
+    name: str
+
+
+def quota_bytes(db: Session, user: User) -> int:
+    return (user.quota_mb or get_setting(db, "default_quota_mb")) * 1024 * 1024
+
+
+def _err(exc: Exception) -> HTTPException:
+    return HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+
+
+@router.get("")
+def listing(path: str = "", user: User = Depends(current_user), db: Session = Depends(get_db)):
+    base = home_dir(user.username)
+    try:
+        items = list_dir(base, path)
+    except StorageError as exc:
+        raise _err(exc) from exc
+    return {"path": path.strip("/"), "items": items, "used": dir_size(base), "quota": quota_bytes(db, user),
+            "desktop_path": config.container_files_path}
+
+
+@router.post("/upload")
+def upload(request: Request, path: str = Form(""), file: UploadFile = File(...),
+           user: User = Depends(current_user), db: Session = Depends(get_db)):
+    base = home_dir(user.username)
+    try:
+        target = write_upload(base, path, file.filename or "", file.file, quota_bytes(db, user))
+    except StorageError as exc:
+        raise _err(exc) from exc
+    audit(db, "file_upload", user, str(target.relative_to(base.resolve())), request)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/mkdir")
+def mkdir(data: MkdirIn, user: User = Depends(current_user)):
+    try:
+        make_dir(home_dir(user.username), data.path, data.name)
+    except FileExistsError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Така папка вже існує") from exc
+    except StorageError as exc:
+        raise _err(exc) from exc
+    return {"ok": True}
+
+
+@router.get("/download")
+def download(path: str, user: User = Depends(current_user)):
+    try:
+        target = safe_path(home_dir(user.username), path)
+    except StorageError as exc:
+        raise _err(exc) from exc
+    if not target.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Файл не знайдено")
+    return FileResponse(target, filename=target.name)
+
+
+@router.delete("")
+def remove(path: str, request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    try:
+        delete_path(home_dir(user.username), path)
+    except StorageError as exc:
+        raise _err(exc) from exc
+    audit(db, "file_delete", user, path, request)
+    db.commit()
+    return {"ok": True}

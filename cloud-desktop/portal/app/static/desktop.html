@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Робочий стіл</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🖥</text></svg>">
+  <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body class="desk-body">
+  <div class="desk-bar">
+    <a href="/" class="btn" style="background:#1f2937;color:#e5e7eb;border-color:#374151;padding:.35rem .75rem;font-size:.88rem">← Портал</a>
+    <span class="title" id="title">Робочий стіл</span>
+    <span id="status"></span>
+    <span class="spacer"></span>
+    <button id="btn-submit" class="primary hidden">📤 Здати роботу</button>
+    <button id="btn-files" class="hide-mobile">📁 Мої файли</button>
+    <button id="btn-pause" class="hide-mobile">⏸ Пауза</button>
+    <button id="btn-reset">↺ Скинути</button>
+    <button id="btn-stop">⏹ Зупинити</button>
+    <button id="btn-full" class="hide-mobile">⛶ На весь екран</button>
+  </div>
+  <div id="helper-note" class="helper-note hidden"></div>
+  <div id="wait" class="desk-wait"><div><div class="spinner"></div><div id="wait-text">Завантаження…</div></div></div>
+  <iframe id="frame" class="desk-frame hidden" title="Робочий стіл" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
+  <script type="module" src="/static/js/desktop.js"></script>
+</body>
+</html>

@@ -1,0 +1,110 @@
+# Хмарний робочий стіл для студентів — розгортання на одному сервері Ubuntu.
+#
+# Схема мережі:
+#   браузер ──HTTPS──▶ nginx (host, :443) ──▶ портал 127.0.0.1:8000
+#                                        └──▶ стіл студента 127.0.0.1:<порт> (після перевірки порталом)
+#   портал ──▶ MySQL 127.0.0.1:3306, Docker API (/var/run/docker.sock)
+#   столи студентів — у мережі cd_desktops без зв'язку між собою (ICC вимкнено).
+#
+# Запуск:  cp .env.example .env  &&  nano .env  &&  docker compose up -d --build
+
+name: cloud-desktop
+
+services:
+  db:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: cloud_desktop
+      MYSQL_USER: portal
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Задайте MYSQL_PASSWORD у .env}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Задайте MYSQL_ROOT_PASSWORD у .env}
+      TZ: Europe/Kyiv
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    ports:
+      - "127.0.0.1:3306:3306"   # лише для порталу на цьому сервері
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  portal:
+    build: ./portal
+    restart: unless-stopped
+    network_mode: host        # бачить опубліковані на 127.0.0.1 порти столів і MySQL
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      CD_DATABASE_URL: mysql+pymysql://portal:${MYSQL_PASSWORD}@127.0.0.1:3306/cloud_desktop?charset=utf8mb4
+      CD_SECRET_KEY: ${CD_SECRET_KEY:?Задайте CD_SECRET_KEY у .env}
+      CD_DRIVER: docker
+      CD_STORAGE_ROOT: ${CD_STORAGE_ROOT:-/srv/cloud-desktop}
+      CD_HOST_STORAGE_ROOT: ${CD_STORAGE_ROOT:-/srv/cloud-desktop}
+      CD_COOKIE_SECURE: "true"
+      CD_ADMIN_USERNAME: ${CD_ADMIN_USERNAME:-admin}
+      CD_ADMIN_PASSWORD: ${CD_ADMIN_PASSWORD:-}
+      CD_DEMO_SEED: ${CD_DEMO_SEED:-0}
+      CD_KASM_TAG: ${CD_KASM_TAG:-1.17.0}
+      CD_CONTAINER_DISK_SIZE: ${CD_CONTAINER_DISK_SIZE:-}
+      TZ: Europe/Kyiv
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Той самий шлях усередині й назовні: портал передає його Docker для bind mount.
+      - ${CD_STORAGE_ROOT:-/srv/cloud-desktop}:${CD_STORAGE_ROOT:-/srv/cloud-desktop}
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    network_mode: host
+    depends_on: [portal]
+    environment:
+      CD_DOMAIN: ${CD_DOMAIN:?Задайте CD_DOMAIN у .env}
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - ./certs:/etc/nginx/certs:ro
+      - ./certbot-www:/var/www/certbot:ro
+
+  # --- моніторинг (пізніше): docker compose --profile monitoring up -d -------------
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: [monitoring]
+    restart: unless-stopped
+    network_mode: host
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--web.listen-address=127.0.0.1:9090",
+              "--storage.tsdb.retention.time=30d"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    profiles: [monitoring]
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    command: ["--path.rootfs=/host", "--web.listen-address=127.0.0.1:9100"]
+    volumes:
+      - /:/host:ro,rslave
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      GF_SERVER_HTTP_ADDR: 127.0.0.1
+      GF_SERVER_ROOT_URL: https://${CD_DOMAIN}/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-change-me}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana-datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+
+volumes:
+  db-data:
+  prometheus-data:
+  grafana-data:

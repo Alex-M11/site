@@ -1,0 +1,16 @@
+[mysqld]
+user            = kasm-user
+datadir         = /var/lib/mysql-desktop/data
+socket          = /tmp/mysqld.sock
+pid-file        = /tmp/mysqld.pid
+log-error       = /var/lib/mysql-desktop/error.log
+bind-address    = 127.0.0.1
+mysqlx          = OFF
+secure-file-priv = ""
+# Скромні налаштування пам'яті: стіл має ліміт 2 ГБ на все.
+innodb_buffer_pool_size = 128M
+performance_schema = OFF
+max_connections = 30
+
+[client]
+socket = /tmp/mysqld.sock

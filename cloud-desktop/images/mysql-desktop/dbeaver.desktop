@@ -1,0 +1,8 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=DBeaver (MySQL: student / student)
+Exec=/usr/share/dbeaver-ce/dbeaver
+Icon=/usr/share/dbeaver-ce/dbeaver.png
+Terminal=false
+Categories=Development;Database;
