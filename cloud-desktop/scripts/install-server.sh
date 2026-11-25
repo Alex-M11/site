@@ -37,8 +37,10 @@ fi
 
 echo "==> Папка для файлів студентів: $STORAGE_ROOT"
 mkdir -p "$STORAGE_ROOT/home" "$STORAGE_ROOT/submissions" "$STORAGE_ROOT/backups"
-chown 1000:1000 "$STORAGE_ROOT/home"
-chmod 750 "$STORAGE_ROOT"
+# Портал працює від uid 1000 (як і користувач усередині столів) — йому належать файли студентів.
+chown 1000:1000 "$STORAGE_ROOT/home" "$STORAGE_ROOT/submissions"
+chown root:1000 "$STORAGE_ROOT" && chmod 750 "$STORAGE_ROOT"
+chmod 700 "$STORAGE_ROOT/backups"
 
 echo "==> Мережа для столів (контейнери не бачать один одного)"
 bash scripts/firewall.sh
@@ -55,6 +57,7 @@ if [ ! -f .env ]; then
   sed -i "s|^MYSQL_PASSWORD=.*|MYSQL_PASSWORD=$(openssl rand -base64 24 | tr -d '\n/+=')|" .env
   sed -i "s|^MYSQL_ROOT_PASSWORD=.*|MYSQL_ROOT_PASSWORD=$(openssl rand -base64 24 | tr -d '\n/+=')|" .env
   sed -i "s|^GRAFANA_PASSWORD=.*|GRAFANA_PASSWORD=$(openssl rand -base64 18 | tr -d '\n/+=')|" .env
+  sed -i "s|^DOCKER_GID=.*|DOCKER_GID=$(getent group docker | cut -d: -f3)|" .env
   chmod 600 .env
   echo "Створено .env з випадковими паролями. Відредагуйте CD_DOMAIN і CD_ADMIN_PASSWORD: nano .env"
 fi

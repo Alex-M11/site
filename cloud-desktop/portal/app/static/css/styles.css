@@ -161,3 +161,12 @@ pre.log { white-space: pre-wrap; font-size: .85rem; background: #f6f8fb; padding
   .grid2 { grid-template-columns: 1fr; }
   .desk-bar .hide-mobile { display: none; }
 }
+
+.quota-banner { margin: .8rem 2rem 0; padding: .6rem .9rem; border-radius: 10px; font-size: .92rem; }
+.quota-banner.warn { background: var(--warn-soft); color: #8a5a00; }
+.quota-banner.danger { background: var(--danger-soft); color: var(--danger); }
+.divider { display: flex; align-items: center; gap: .6rem; color: var(--muted); font-size: .85rem; }
+.divider::before, .divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+details > summary { cursor: pointer; }
+.helper-note.student { background: #1d4ed8; }
+@media (max-width: 860px) { .quota-banner { margin: .6rem 1rem 0; } }

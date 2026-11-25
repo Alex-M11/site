@@ -4,7 +4,10 @@ from __future__ import annotations
 import itertools
 import threading
 
-from .base import DesktopDriver, DesktopSpec, DriverError, Endpoint
+import os
+import subprocess
+
+from .base import CheckResult, CheckSpec, DesktopDriver, DesktopSpec, DriverError, Endpoint
 
 
 class FakeDriver(DesktopDriver):
@@ -51,8 +54,26 @@ class FakeDriver(DesktopDriver):
         c = self.containers.get(cid)
         return c["status"] if c else "missing"
 
+    def is_ready(self, cid: str, auth: tuple[str, str] | None = None) -> bool:
+        return self.status(cid) == "running"
+
     def endpoint(self, cid: str) -> Endpoint:
         return Endpoint("127.0.0.1", self._get(cid)["port"])
+
+    def run_check(self, spec: CheckSpec) -> CheckResult:
+        """Лише для розробки й тестів: скрипт виконується локально без ізоляції."""
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "WORK": spec.work_host_path, "HOME": "/tmp"}
+        try:
+            proc = subprocess.run(["sh", "-c", spec.script], cwd=spec.work_host_path, env=env, timeout=spec.timeout,
+                                  capture_output=True, text=True)
+        except subprocess.TimeoutExpired as exc:
+            out = (exc.stdout or b"").decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+            return CheckResult(None, out, timed_out=True)
+        return CheckResult(proc.returncode, proc.stdout + proc.stderr)
+
+    def disk_usage(self, cid: str) -> int | None:
+        c = self.containers.get(cid)
+        return c.get("disk", 0) if c else None
 
     def list_managed(self) -> list[str]:
         return list(self.containers)

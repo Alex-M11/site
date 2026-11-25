@@ -153,6 +153,11 @@ def submission_dir(assignment_id: int, username: str) -> Path:
     return config.storage_root / "submissions" / str(int(assignment_id)) / _check_username(username)
 
 
+def host_submission_dir(assignment_id: int, username: str) -> str:
+    return str(PurePosixPath(config.host_storage_root) / "submissions" / str(int(assignment_id))
+               / _check_username(username))
+
+
 def copy_submission(username: str, assignment_id: int, rel_paths: list[str]) -> list[str]:
     """Скопіювати вибрані файли з «Моїх файлів» у здачу. Повертає список імен."""
     base = home_dir(username)

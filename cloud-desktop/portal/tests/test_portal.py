@@ -46,7 +46,9 @@ def test_passwords_are_hashed(client):
 
 
 def test_bearer_token_works(client):
-    token = client.post("/api/auth/login", json={"username": "teacher", "password": "Teacher123"}, headers=H).json()["token"]
+    r = client.post("/api/auth/login", json={"username": "teacher", "password": "Teacher123"}, headers=H)
+    assert "token" not in r.json()  # токен лише в HttpOnly-cookie
+    token = r.cookies["cd_token"]
     client.cookies.clear()
     r = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert r.json()["role"] == "teacher"

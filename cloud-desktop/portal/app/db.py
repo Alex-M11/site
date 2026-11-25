@@ -41,9 +41,11 @@ def init_engine(url: str) -> Engine:
 
 
 def create_schema() -> None:
+    """Створити або оновити схему через міграції Alembic."""
     from . import models  # noqa: F401  (реєстрація моделей)
+    from .migrate import upgrade
     assert engine is not None
-    Base.metadata.create_all(engine)
+    upgrade(engine)
 
 
 def get_db() -> Iterator[Session]:

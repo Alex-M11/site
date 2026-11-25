@@ -7,12 +7,15 @@ from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .models import ROLE_ADMIN, ROLE_TEACHER, User
+from .models import ROLE_ADMIN, ROLE_TEACHER, RevokedToken, User
 from .security import decode_token
 
 COOKIE_NAME = "cd_token"
 CSRF_HEADER = "x-requested-with"
 CSRF_VALUE = "cloud-desktop"
+
+# Поки користувач не змінив тимчасовий пароль, доступні лише ці адреси.
+PASSWORD_CHANGE_ALLOWED = {"/api/auth/me", "/api/auth/password", "/api/auth/logout"}
 
 
 def token_from_request(request: Request) -> str | None:
@@ -22,11 +25,15 @@ def token_from_request(request: Request) -> str | None:
     return request.cookies.get(COOKIE_NAME)
 
 
-def user_from_request(request: Request, db: Session) -> User | None:
+def token_payload(request: Request) -> dict | None:
     token = token_from_request(request)
-    if not token:
-        return None
-    payload = decode_token(token)
+    return decode_token(token) if token else None
+
+
+def user_from_request(request: Request, db: Session) -> User | None:
+    """Користувач за токеном. Токен недійсний, якщо його відкликано (вихід) або змінилася
+    версія токенів користувача (зміна пароля, ролі, вимкнення акаунта)."""
+    payload = token_payload(request)
     if not payload:
         return None
     try:
@@ -35,6 +42,11 @@ def user_from_request(request: Request, db: Session) -> User | None:
         return None
     if user is None or not user.is_active:
         return None
+    if int(payload.get("ver", 0)) != (user.token_version or 0):
+        return None
+    if db.get(RevokedToken, str(payload.get("jti", ""))) is not None:
+        return None
+    request.state.token = payload
     return user
 
 
@@ -42,7 +54,15 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> User:
     user = user_from_request(request, db)
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Потрібно увійти в систему")
+    if must_change_now(request, user) and request.url.path not in PASSWORD_CHANGE_ALLOWED:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Спершу змініть тимчасовий пароль")
     return user
+
+
+def must_change_now(request: Request, user: User) -> bool:
+    """Тимчасовий пароль треба змінити — але не тим, хто увійшов через пошту коледжу (пароль їм не потрібен)."""
+    payload = getattr(request.state, "token", None) or {}
+    return bool(user.must_change_password) and payload.get("amr") != "oidc"
 
 
 def require_roles(*roles: str) -> Callable[..., User]:

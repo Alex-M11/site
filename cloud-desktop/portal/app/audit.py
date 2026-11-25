@@ -6,6 +6,7 @@ import logging
 from fastapi import Request
 from sqlalchemy.orm import Session
 
+from .config import config
 from .models import AuditLog, User
 
 log = logging.getLogger("cloud_desktop.audit")
@@ -14,9 +15,13 @@ log = logging.getLogger("cloud_desktop.audit")
 def client_ip(request: Request | None) -> str:
     if request is None:
         return ""
-    # Nginx передає справжню адресу клієнта; портал слухає лише localhost.
-    forwarded = request.headers.get("x-real-ip") or request.headers.get("x-forwarded-for", "").split(",")[0]
-    return (forwarded or (request.client.host if request.client else "")).strip()
+    peer = request.client.host if request.client else ""
+    # Заголовкам з адресою клієнта віримо лише від нашого Nginx (CD_TRUSTED_PROXIES).
+    if peer in config.trusted_proxies:
+        forwarded = request.headers.get("x-real-ip") or request.headers.get("x-forwarded-for", "").split(",")[0]
+        if forwarded.strip():
+            return forwarded.strip()[:64]
+    return peer
 
 
 def audit(db: Session, action: str, user: User | None = None, details: str = "",

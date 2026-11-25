@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures as cf
+import secrets
 import statistics
 import time
 
@@ -47,17 +48,23 @@ def login(url: str, verify: bool, username: str, password: str) -> httpx.Client:
 def prepare(admin: httpx.Client, n: int, group: str) -> list[str]:
     groups = {g["name"]: g["id"] for g in admin.get("/api/admin/groups").json()}
     gid = groups.get(group) or admin.post("/api/admin/groups", json={"name": group}).json()["id"]
-    existing = {u["username"] for u in admin.get("/api/admin/users", params={"q": "loadtest"}).json()}
+    existing = {u["username"]: u for u in admin.get("/api/admin/users", params={"q": "loadtest"}).json()}
     names = [f"loadtest{i:02d}" for i in range(1, n + 1)]
     for name in names:
+        body = {"username": name, "full_name": f"Навантаження {name[-2:]}", "password": PASSWORD, "group_id": gid}
         if name not in existing:
-            admin.post("/api/admin/users", json={"username": name, "full_name": f"Навантаження {name[-2:]}",
-                                                 "password": PASSWORD, "group_id": gid}).raise_for_status()
+            admin.post("/api/admin/users", json=body).raise_for_status()
+        else:   # відомий пароль для повторного запуску
+            admin.put(f"/api/admin/users/{existing[name]['id']}", json=body).raise_for_status()
     return names
 
 
 def run_one(url: str, verify: bool, username: str, template_name: str, timeout: int) -> dict:
     c = login(url, verify, username, PASSWORD)
+    # Пароль видав адміністратор — портал вимагає змінити його перед роботою.
+    if c.get("/api/auth/me").json().get("must_change_password"):
+        c.post("/api/auth/password", json={"old_password": PASSWORD,
+                                           "new_password": "Lt" + secrets.token_hex(6) + "9"}).raise_for_status()
     tpl = next(t for t in c.get("/api/templates").json() if t["name"] == template_name)
     t0 = time.monotonic()
     r = c.post("/api/sessions", json={"template_id": tpl["id"]})

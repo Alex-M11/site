@@ -47,6 +47,7 @@ def test_network_created_without_icc():
     d.ensure_network()
     _, kwargs = client.networks.create.call_args
     assert kwargs["options"]["com.docker.network.bridge.enable_icc"] == "false"
+    assert kwargs["options"]["com.docker.network.bridge.name"] == "cd-desktops"   # як у scripts/firewall.sh
 
 
 def test_endpoint_reads_published_port():
@@ -73,3 +74,45 @@ def test_status_mapping():
     assert d.status("x") == "stopped"
     client.containers.get.side_effect = docker.errors.NotFound("gone")
     assert d.status("x") == "missing"
+
+
+def test_api_errors_become_driver_errors_and_pause_retries(monkeypatch):
+    from app.drivers.base import DriverError
+    d, client = make_driver()
+    monkeypatch.setattr("app.drivers.docker_driver.time.sleep", lambda s: None)
+    c = client.containers.get.return_value
+    c.pause.side_effect = [docker.errors.APIError("unable to freeze"), None]
+    d.pause("x")                                   # друга спроба успішна
+    assert c.pause.call_count == 2
+    c.pause.side_effect = docker.errors.APIError("unable to freeze")
+    with pytest.raises(DriverError, match="призупинити"):
+        d.pause("x")
+    c.start.side_effect = docker.errors.APIError("boom")
+    with pytest.raises(DriverError):
+        d.start("x")
+
+
+def test_disk_usage_uses_container_list_with_size():
+    d, client = make_driver()
+    client.api.containers.return_value = [{"Id": "abc", "SizeRw": 12345}]
+    assert d.disk_usage("abc") == 12345
+    client.api.containers.assert_called_with(all=True, size=True, filters={"id": "abc"})
+
+
+def test_readiness_probe_sends_credentials(monkeypatch):
+    """Без пароля KasmVNC заносить адресу Nginx у чорний список (знайдено під час тестування)."""
+    import http.client
+    d, client = make_driver()
+    client.containers.get.return_value.status = "running"
+    client.containers.get.return_value.attrs = {
+        "NetworkSettings": {"Ports": {"6901/tcp": [{"HostIp": "127.0.0.1", "HostPort": "1"}]}}}
+    sent = {}
+
+    class FakeConn:
+        def __init__(self, *a, **kw): pass
+        def request(self, method, path, headers=None): sent.update(headers or {})
+        def getresponse(self): return type("R", (), {"status": 200})()
+        def close(self): pass
+    monkeypatch.setattr(http.client, "HTTPSConnection", FakeConn)
+    assert d.is_ready("x", ("kasm_user", "pw"))
+    assert sent["Authorization"] == "Basic a2FzbV91c2VyOnB3"

@@ -52,7 +52,7 @@ class ImportIn(BaseModel):
 
 
 # --- користувачі ---------------------------------------------------------------
-def _apply_user(db: Session, u: User, data: UserIn, creating: bool) -> None:
+def _apply_user(db: Session, u: User, data: UserIn, creating: bool, actor: User | None = None) -> None:
     username = data.username.strip().lower()
     if not USERNAME_RE.match(username):
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
@@ -68,6 +68,10 @@ def _apply_user(db: Session, u: User, data: UserIn, creating: bool) -> None:
         if problem:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, problem)
         u.password_hash = hash_password(data.password)
+        # Пароль, який видав адміністратор, користувач має змінити при першому вході.
+        u.must_change_password = actor is None or actor.id != u.id
+    if not creating and (data.password or data.role != u.role or (u.is_active and not data.is_active)):
+        u.token_version = (u.token_version or 0) + 1  # старі входи стають недійсними
     u.username, u.full_name, u.email = username, data.full_name.strip(), data.email.strip()
     u.role, u.is_active = data.role, data.is_active
     u.group_id = data.group_id if data.role == ROLE_STUDENT else None
@@ -95,7 +99,7 @@ def users(q: str = "", role: str = "", group_id: int | None = None,
 def create_user(data: UserIn, request: Request, admin: User = Depends(require_admin),
                 db: Session = Depends(get_db)):
     u = User()
-    _apply_user(db, u, data, creating=True)
+    _apply_user(db, u, data, creating=True, actor=admin)
     db.add(u)
     try:
         db.flush()
@@ -115,7 +119,7 @@ def update_user(user_id: int, data: UserIn, request: Request, admin: User = Depe
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Користувача не знайдено")
     if u.id == admin.id and (data.role != admin.role or not data.is_active):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Не можна зняти права або вимкнути власний акаунт")
-    _apply_user(db, u, data, creating=False)
+    _apply_user(db, u, data, creating=False, actor=admin)
     try:
         db.flush()
     except IntegrityError as exc:

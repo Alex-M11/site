@@ -26,9 +26,12 @@ DEFAULTS: dict[str, Any] = {
     "max_sessions_per_user": 2,       # одночасно відкритих столів на студента
     "idle_timeout_minutes": 30,       # автовимкнення при простої
     "default_quota_mb": 2048,         # персональний диск студента
+    "quota_hard_percent": 120,        # понад цей % квоти запущені столи зупиняються
+    "max_container_disk_mb": 10240,   # скільки контейнер може записати поза «Моїми файлами»
     "max_cpu": 2.0,                   # максимум, який викладач може дати шаблону
     "max_memory_mb": 4096,
     "image_catalog": None,            # None → default_image_catalog()
+    "check_images": ["python:3.12-slim", "gcc:14", "node:22-slim"],  # образи для автоперевірки
 }
 
 LIMITS = {
@@ -36,6 +39,8 @@ LIMITS = {
     "max_sessions_per_user": (1, 10),
     "idle_timeout_minutes": (5, 24 * 60),
     "default_quota_mb": (100, 1024 * 1024),
+    "quota_hard_percent": (100, 500),
+    "max_container_disk_mb": (512, 1024 * 1024),
     "max_cpu": (0.25, 64),
     "max_memory_mb": (256, 256 * 1024),
 }
@@ -47,7 +52,8 @@ def get_setting(db: Session, key: str) -> Any:
         return json.loads(row.value)
     if key == "image_catalog":
         return default_image_catalog()
-    return DEFAULTS[key]
+    value = DEFAULTS[key]
+    return list(value) if isinstance(value, list) else value
 
 
 def all_settings(db: Session) -> dict[str, Any]:
@@ -63,6 +69,10 @@ def set_setting(db: Session, key: str, value: Any) -> None:
         value = cast(value)
         if not lo <= value <= hi:
             raise ValueError(f"{key}: значення має бути в межах {lo}…{hi}")
+    if key == "check_images":
+        if not isinstance(value, list) or not all(isinstance(i, str) and i.strip() for i in value):
+            raise ValueError("check_images: потрібен список назв образів")
+        value = [i.strip() for i in value]
     if key == "image_catalog":
         if not isinstance(value, list) or not all(isinstance(i, dict) and i.get("image") for i in value):
             raise ValueError("image_catalog: потрібен список об'єктів з полем image")

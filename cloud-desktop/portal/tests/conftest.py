@@ -14,6 +14,7 @@ os.environ.update({
     "CD_ADMIN_PASSWORD": "Admin12345",
     "CD_SECRET_KEY": "test-secret-key-that-is-long-enough-for-hs256",
     "CD_BACKGROUND_TASKS": "0",
+    "CD_TRUSTED_PROXIES": "127.0.0.1,testclient",
 })
 
 H = {"X-Requested-With": "cloud-desktop"}
@@ -26,9 +27,7 @@ def app_env(tmp_path, monkeypatch):
     config_mod.reload_config()
     from app import db
     from app.drivers import set_driver
-    from app.security import login_limiter
     set_driver(None)
-    login_limiter._attempts.clear()
     if db.engine is not None:
         db.Base.metadata.drop_all(db.engine)
     yield

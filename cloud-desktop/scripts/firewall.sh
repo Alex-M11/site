@@ -14,11 +14,32 @@ BRIDGE="cd-desktops"
 SUBNET="${CD_DESKTOP_SUBNET:-172.30.0.0/16}"
 LAB_ALLOW="${LAB_ALLOW:-}"
 
-if ! docker network inspect "$NETWORK" >/dev/null 2>&1; then
+create_network() {
   docker network create --driver bridge --subnet "$SUBNET" \
     -o com.docker.network.bridge.enable_icc=false \
     -o com.docker.network.bridge.name="$BRIDGE" \
     --label cloud-desktop.managed=true "$NETWORK"
+}
+
+if ! docker network inspect "$NETWORK" >/dev/null 2>&1; then
+  create_network
+else
+  # Мережу могли створити раніше без імені мосту (напр. портал запустили до цього скрипта) —
+  # тоді правила нижче нічого б не фільтрували. Перестворюємо її, якщо до неї ніхто не під'єднаний.
+  current="$(docker network inspect "$NETWORK" -f '{{index .Options "com.docker.network.bridge.name"}}')"
+  if [ "$current" != "$BRIDGE" ]; then
+    if [ -n "$(docker network inspect "$NETWORK" -f '{{range .Containers}}x{{end}}')" ]; then
+      echo "ПОМИЛКА: мережа $NETWORK створена без моста $BRIDGE, а до неї під'єднані столи."
+      echo "Зупиніть усі столи (адмінка → Навантаження) і запустіть скрипт знову."
+      exit 1
+    fi
+    echo "Перестворюю мережу $NETWORK з мостом $BRIDGE"
+    docker network rm "$NETWORK" >/dev/null
+    create_network
+  fi
+fi
+if [ ! -e "/sys/class/net/$BRIDGE" ]; then
+  echo "ПОМИЛКА: міст $BRIDGE не знайдено — правила не застосовано."; exit 1
 fi
 
 install -d /etc/cloud-desktop
@@ -45,6 +66,14 @@ iptables -C INPUT -i ${BRIDGE} -m conntrack --ctstate ESTABLISHED,RELATED -j ACC
 iptables -C INPUT -i ${BRIDGE} -j DROP 2>/dev/null || iptables -A INPUT -i ${BRIDGE} -j DROP
 EOF
 chmod 755 /etc/cloud-desktop/firewall-rules.sh
+
+if [ ! -d /run/systemd/system ]; then
+  # Без systemd (напр. WSL або контейнер): застосовуємо правила одразу; після перезавантаження —
+  # запустіть /etc/cloud-desktop/firewall-rules.sh вручну або з cron @reboot.
+  /etc/cloud-desktop/firewall-rules.sh
+  echo "systemd не знайдено: правила застосовано, але не збережено. Додайте в crontab: @reboot /etc/cloud-desktop/firewall-rules.sh"
+  exit 0
+fi
 
 cat > /etc/systemd/system/cloud-desktop-firewall.service <<'EOF'
 [Unit]

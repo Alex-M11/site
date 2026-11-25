@@ -3,12 +3,13 @@
 # Cron (щоночі о 02:30):  30 2 * * *  cd /opt/cloud-desktop && bash scripts/backup.sh >> /var/log/cd-backup.log 2>&1
 # Скопіюйте каталог backups на інший диск або сервер — копія на тому ж диску не врятує від його поломки.
 set -euo pipefail
+umask 077   # у копіях — хеші паролів і роботи студентів
 cd "$(dirname "$0")/.."
 set -a; . ./.env; set +a
 STORAGE_ROOT="${CD_STORAGE_ROOT:-/srv/cloud-desktop}"
 DEST="${BACKUP_DIR:-$STORAGE_ROOT/backups}"
 KEEP_DAYS="${KEEP_DAYS:-14}"
-STAMP="$(date +%Y-%m-%d_%H%M)"
+STAMP="$(date +%Y-%m-%d_%H%M%S)"
 mkdir -p "$DEST"
 
 echo "[$(date)] База даних…"

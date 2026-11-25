@@ -18,6 +18,8 @@ def user_out(u: User, full: bool = False) -> dict:
     if full:
         data.update({
             "email": u.email, "is_active": u.is_active, "quota_mb": u.quota_mb,
+            "must_change_password": bool(u.must_change_password),
+            "disk_used_bytes": u.disk_used_bytes, "disk_checked_at": dt(u.disk_checked_at),
             "created_at": dt(u.created_at), "last_login": dt(u.last_login),
             "teaching": [{"id": g.id, "name": g.name} for g in u.teaching],
         })
@@ -59,27 +61,34 @@ def session_out(s: DesktopSession) -> dict:
 
 
 def assignment_out(a: Assignment, submission: Submission | None = None, stats: dict | None = None) -> dict:
+    """stats задано → відповідь для викладача (зі скриптом перевірки); інакше — для студента."""
+    for_teacher = stats is not None
     data = {
         "id": a.id, "title": a.title, "description": a.description,
         "group": {"id": a.group.id, "name": a.group.name},
         "template": {"id": a.template.id, "name": a.template.name} if a.template else None,
         "teacher": (a.teacher.full_name or a.teacher.username) if a.teacher else None,
         "due_at": dt(a.due_at), "created_at": dt(a.created_at),
+        "has_check": bool((a.check_script or "").strip()),
     }
-    if submission is not None:
-        data["submission"] = submission_out(submission)
-    elif stats is None:
-        data["submission"] = None
-    if stats is not None:
-        data["stats"] = stats
+    if for_teacher:
+        data.update({"check_script": a.check_script or "", "check_image": a.check_image,
+                     "check_timeout": a.check_timeout, "show_check_to_student": a.show_check_to_student,
+                     "stats": stats})
+    else:
+        data["submission"] = submission_out(submission, for_student=True) if submission else None
     return data
 
 
-def submission_out(s: Submission) -> dict:
-    return {
+def submission_out(s: Submission, for_student: bool = False) -> dict:
+    data = {
         "id": s.id, "assignment_id": s.assignment_id,
         "student": {"id": s.student.id, "username": s.student.username, "full_name": s.student.full_name},
         "comment": s.comment, "files": s.files or [], "submitted_at": dt(s.submitted_at),
         "late": bool(s.assignment.due_at and s.submitted_at > s.assignment.due_at),
         "grade": s.grade, "feedback": s.feedback, "graded_at": dt(s.graded_at),
+        "check_status": s.check_status, "check_output": s.check_output or "", "checked_at": dt(s.checked_at),
     }
+    if for_student and not s.assignment.show_check_to_student:
+        data.update({"check_status": "hidden" if s.check_status else "", "check_output": ""})
+    return data

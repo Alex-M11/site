@@ -55,12 +55,12 @@ export function modal(title, build, { submitText = "Зберегти", onSubmit,
     const body = h("div");
     const error = h("div", { class: "error-box hidden" });
     const collect = build(body);
-    const close = (value) => { back.remove(); resolve(value); };
+    let close = (value) => { back.remove(); resolve(value); };
     const submitBtn = h("button", { class: "primary", type: "submit" }, submitText);
     const form = h("form", { class: "modal", style: wide ? "width:min(900px,100%)" : null },
       h("h3", {}, title), error, body,
       h("div", { class: "foot" },
-        h("button", { type: "button", onclick: () => close(null) }, "Скасувати"),
+        h("button", { type: "button", onclick: () => close(null) }, onSubmit ? "Скасувати" : "Закрити"),
         onSubmit ? submitBtn : null));
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -75,6 +75,13 @@ export function modal(title, build, { submitText = "Зберегти", onSubmit,
       } finally { submitBtn.disabled = false; }
     });
     const back = h("div", { class: "modal-back", onclick: (e) => { if (e.target === back) close(null); } }, form);
+    const onKey = (e) => {
+      const open = document.querySelectorAll(".modal-back");
+      if (e.key === "Escape" && open[open.length - 1] === back) close(null);   // лише верхнє вікно
+    };
+    document.addEventListener("keydown", onKey);
+    const origClose = close;
+    close = (value) => { document.removeEventListener("keydown", onKey); origClose(value); };
     document.body.append(back);
     const first = form.querySelector("input, select, textarea");
     if (first) first.focus();

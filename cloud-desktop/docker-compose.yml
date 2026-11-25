@@ -35,6 +35,11 @@ services:
     build: ./portal
     restart: unless-stopped
     network_mode: host        # бачить опубліковані на 127.0.0.1 порти столів і MySQL
+    # Не root: той самий uid, що й користувач усередині столів (файли студентів належать йому),
+    # а доступ до Docker — через групу docker хоста.
+    user: "1000:1000"
+    group_add:
+      - "${DOCKER_GID:?Задайте DOCKER_GID у .env (getent group docker)}"
     depends_on:
       db:
         condition: service_healthy
@@ -50,6 +55,15 @@ services:
       CD_DEMO_SEED: ${CD_DEMO_SEED:-0}
       CD_KASM_TAG: ${CD_KASM_TAG:-1.17.0}
       CD_CONTAINER_DISK_SIZE: ${CD_CONTAINER_DISK_SIZE:-}
+      CD_PUBLIC_URL: https://${CD_DOMAIN}
+      CD_API_DOCS: "false"
+      CD_OIDC_ISSUER: ${CD_OIDC_ISSUER:-}
+      CD_OIDC_CLIENT_ID: ${CD_OIDC_CLIENT_ID:-}
+      CD_OIDC_CLIENT_SECRET: ${CD_OIDC_CLIENT_SECRET:-}
+      CD_OIDC_ALLOWED_DOMAINS: ${CD_OIDC_ALLOWED_DOMAINS:-}
+      CD_OIDC_AUTO_CREATE: ${CD_OIDC_AUTO_CREATE:-0}
+      CD_OIDC_LABEL: ${CD_OIDC_LABEL:-Увійти через пошту коледжу}
+      HOME: /tmp
       TZ: Europe/Kyiv
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -88,7 +102,7 @@ services:
     pid: host
     command: ["--path.rootfs=/host", "--web.listen-address=127.0.0.1:9100"]
     volumes:
-      - /:/host:ro,rslave
+      - /:/host:ro      # без rslave: працює і там, де корінь не shared mount
 
   grafana:
     image: grafana/grafana:11.3.0
@@ -103,6 +117,8 @@ services:
     volumes:
       - grafana-data:/var/lib/grafana
       - ./monitoring/grafana-datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+      - ./monitoring/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/cloud-desktop.yml:ro
+      - ./monitoring/dashboards:/var/lib/grafana/dashboards:ro
 
 volumes:
   db-data:

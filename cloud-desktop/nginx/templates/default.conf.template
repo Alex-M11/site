@@ -6,7 +6,9 @@ map $http_upgrade $connection_upgrade {
     ''      close;
 }
 
-limit_req_zone $binary_remote_addr zone=login:10m rate=10r/m;
+# Уся аудиторія часто виходить через одну IP-адресу (NAT), тому ліміт щедрий:
+# точний захист від перебору (5 спроб на логін) робить сам портал.
+limit_req_zone $binary_remote_addr zone=login:10m rate=120r/m;
 
 server {
     listen 80;
@@ -45,7 +47,8 @@ server {
     proxy_set_header X-Forwarded-Proto $scheme;
 
     # --- робочі столи: /desktop/<id>/... → контейнер студента ---------------------
-    location ~ ^/desktop/(?<desk_id>[0-9]+)/(?<desk_path>.*)$ {
+    # /desktop/<id>/ — керування, /desktop/<id>-view/ — лише перегляд (для викладача)
+    location ~ ^/desktop/(?<desk_id>[0-9]+(-view)?)/(?<desk_path>.*)$ {
         auth_request /_desktop_auth;
         auth_request_set $desk_upstream $upstream_http_x_desktop_upstream;
         auth_request_set $desk_auth     $upstream_http_x_desktop_auth;
@@ -83,7 +86,8 @@ server {
 
     # --- портал ---------------------------------------------------------------------
     location = /api/auth/login {
-        limit_req zone=login burst=10 nodelay;
+        limit_req zone=login burst=100 nodelay;
+        limit_req_status 429;
         proxy_pass http://127.0.0.1:8000;
     }
 
@@ -101,5 +105,13 @@ server {
     location / {
         proxy_pass http://127.0.0.1:8000;
         proxy_read_timeout 300s;
+        error_page 502 503 504 = @portal_down;
+    }
+
+    # Портал перезапускається (оновлення) — відкриті столи працюють далі, а тут показуємо пояснення.
+    location @portal_down {
+        default_type text/html;
+        add_header Retry-After 15 always;
+        return 503 '<!DOCTYPE html><html lang="uk"><meta charset="utf-8"><meta http-equiv="refresh" content="15"><title>Портал оновлюється</title><body style="font-family:sans-serif;text-align:center;padding:4rem;color:#1c2333"><h2>Портал оновлюється</h2><p>Спробуйте за хвилину — сторінка оновиться сама. Відкриті робочі столи продовжують працювати.</p></body></html>';
     }
 }

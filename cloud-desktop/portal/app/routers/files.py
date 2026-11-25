@@ -11,7 +11,7 @@ from ..config import config
 from ..db import get_db
 from ..deps import current_user
 from ..models import User
-from ..settings_store import get_setting
+from ..quota import measure, quota_bytes, state as quota_state
 from ..storage import StorageError, delete_path, dir_size, home_dir, list_dir, make_dir, safe_path, write_upload
 
 router = APIRouter(prefix="/api/files", tags=["files"])
@@ -20,10 +20,6 @@ router = APIRouter(prefix="/api/files", tags=["files"])
 class MkdirIn(BaseModel):
     path: str = ""
     name: str
-
-
-def quota_bytes(db: Session, user: User) -> int:
-    return (user.quota_mb or get_setting(db, "default_quota_mb")) * 1024 * 1024
 
 
 def _err(exc: Exception) -> HTTPException:
@@ -37,8 +33,11 @@ def listing(path: str = "", user: User = Depends(current_user), db: Session = De
         items = list_dir(base, path)
     except StorageError as exc:
         raise _err(exc) from exc
-    return {"path": path.strip("/"), "items": items, "used": dir_size(base), "quota": quota_bytes(db, user),
-            "desktop_path": config.container_files_path}
+    used = dir_size(base)
+    user.disk_used_bytes = used
+    db.commit()
+    return {"path": path.strip("/"), "items": items, "used": used, "quota": quota_bytes(db, user),
+            "quota_state": quota_state(db, user, used), "desktop_path": config.container_files_path}
 
 
 @router.post("/upload")
@@ -50,6 +49,7 @@ def upload(request: Request, path: str = Form(""), file: UploadFile = File(...),
     except StorageError as exc:
         raise _err(exc) from exc
     audit(db, "file_upload", user, str(target.relative_to(base.resolve())), request)
+    measure(user)
     db.commit()
     return {"ok": True}
 
@@ -83,5 +83,6 @@ def remove(path: str, request: Request, user: User = Depends(current_user), db: 
     except StorageError as exc:
         raise _err(exc) from exc
     audit(db, "file_delete", user, path, request)
+    measure(user)
     db.commit()
     return {"ok": True}

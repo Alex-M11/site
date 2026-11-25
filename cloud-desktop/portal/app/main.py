@@ -66,8 +66,15 @@ async def lifespan(_app: FastAPI):
             await task
 
 
-app = FastAPI(title="Хмарний робочий стіл для студентів", version="1.0.0", lifespan=lifespan,
-              docs_url="/api/docs", openapi_url="/api/openapi.json", redoc_url=None)
+app = FastAPI(title="Хмарний робочий стіл для студентів", version="1.1.0", lifespan=lifespan,
+              docs_url="/api/docs" if config.api_docs else None,
+              openapi_url="/api/openapi.json" if config.api_docs else None, redoc_url=None)
+
+# Сторінки порталу вантажать лише власні скрипти й стилі; стилі через атрибути style — тому 'unsafe-inline'
+# лише для style-src. Сторінки KasmVNC (/desktop/) і Swagger мають власні правила.
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+       "connect-src 'self'; frame-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'; "
+       "object-src 'none'")
 
 
 @app.middleware("http")
@@ -80,8 +87,11 @@ async def csrf_and_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "same-origin")
-    if not request.url.path.startswith("/desktop/"):
+    path = request.url.path
+    if not path.startswith("/desktop/"):
         response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        if not path.startswith("/api/docs"):
+            response.headers.setdefault("Content-Security-Policy", CSP)
     return response
 
 
@@ -108,6 +118,7 @@ def healthz():
 
 
 @app.get("/desktop/{session_id}/", include_in_schema=False)
+@app.get("/desktop/{session_id}-view/", include_in_schema=False)
 def fake_desktop(session_id: int):
     """У продакшені /desktop/ обробляє Nginx. Цей маршрут — заглушка для fake-режиму."""
     if config.driver != "fake":

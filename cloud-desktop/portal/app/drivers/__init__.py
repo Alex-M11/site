@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ..config import config
-from .base import DesktopDriver, DesktopSpec, DriverError, Endpoint
+from .base import CheckResult, CheckSpec, DesktopDriver, DesktopSpec, DriverError, Endpoint
 
 _driver: DesktopDriver | None = None
 
@@ -26,4 +26,4 @@ def set_driver(driver: DesktopDriver | None) -> None:
     _driver = driver
 
 
-__all__ = ["DesktopDriver", "DesktopSpec", "DriverError", "Endpoint", "get_driver", "set_driver"]
+__all__ = ["CheckResult", "CheckSpec", "DesktopDriver", "DesktopSpec", "DriverError", "Endpoint", "get_driver", "set_driver"]

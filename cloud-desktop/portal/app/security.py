@@ -6,9 +6,7 @@ import hashlib
 import hmac
 import secrets
 import time
-from collections import defaultdict, deque
 from datetime import timedelta
-from threading import Lock
 
 import jwt
 
@@ -43,51 +41,55 @@ def validate_password_strength(password: str) -> str | None:
     return None
 
 
-def create_token(user_id: int, role: str) -> str:
-    payload = {
-        "sub": str(user_id),
-        "role": role,
-        "iat": int(time.time()),
-        "exp": int(time.time()) + config.token_ttl_minutes * 60,
-        "jti": secrets.token_hex(8),
-    }
-    return jwt.encode(payload, config.secret_key, algorithm="HS256")
+def create_token(user, method: str = "password") -> tuple[str, str, int]:
+    """JWT для користувача. Повертає (токен, jti, час закінчення unix). method: password | oidc."""
+    now = int(time.time())
+    jti = secrets.token_hex(16)
+    exp = now + config.token_ttl_minutes * 60
+    payload = {"sub": str(user.id), "role": user.role, "ver": user.token_version or 0,
+               "iat": now, "exp": exp, "jti": jti, "amr": method}
+    return jwt.encode(payload, config.secret_key, algorithm="HS256"), jti, exp
 
 
 def decode_token(token: str) -> dict | None:
     try:
-        return jwt.decode(token, config.secret_key, algorithms=["HS256"])
+        return jwt.decode(token, config.secret_key, algorithms=["HS256"],
+                          options={"require": ["sub", "exp", "jti"]})
     except jwt.PyJWTError:
         return None
 
 
-class LoginRateLimiter:
-    """Простий захист від перебору паролів: не більше N невдалих спроб за вікно."""
-
-    def __init__(self, max_attempts: int = 5, window: timedelta = timedelta(minutes=5)):
-        self.max_attempts = max_attempts
-        self.window = window.total_seconds()
-        self._attempts: dict[str, deque[float]] = defaultdict(deque)
-        self._lock = Lock()
-
-    def _prune(self, key: str, now: float) -> deque[float]:
-        q = self._attempts[key]
-        while q and now - q[0] > self.window:
-            q.popleft()
-        return q
-
-    def is_blocked(self, key: str) -> bool:
-        with self._lock:
-            return len(self._prune(key, time.monotonic())) >= self.max_attempts
-
-    def fail(self, key: str) -> None:
-        with self._lock:
-            now = time.monotonic()
-            self._prune(key, now).append(now)
-
-    def reset(self, key: str) -> None:
-        with self._lock:
-            self._attempts.pop(key, None)
+_TEMP_ALPHABET = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # без схожих l/1/O/0
 
 
-login_limiter = LoginRateLimiter()
+def temp_password(length: int = 10) -> str:
+    """Тимчасовий пароль, який легко продиктувати; завжди має і літери, і цифри."""
+    while True:
+        pw = "".join(secrets.choice(_TEMP_ALPHABET) for _ in range(length))
+        if validate_password_strength(pw) is None and any(c.isdigit() for c in pw):
+            return pw
+
+
+# --- захист від перебору паролів -----------------------------------------------------
+# Рахуємо невдалі спроби за журналом дій у БД, тому ліміт працює і з кількома процесами порталу.
+MAX_FAILS_PER_USER_IP = 5      # з однієї адреси на один логін за вікно
+MAX_FAILS_PER_USER = 20        # на один логін з будь-яких адрес (розподілений перебір)
+FAIL_WINDOW = timedelta(minutes=5)
+
+
+def login_blocked(db, username: str, ip: str) -> bool:
+    from sqlalchemy import func, select
+
+    from .models import AuditLog, utcnow
+    since = utcnow() - FAIL_WINDOW
+    last_ok = db.scalar(select(func.max(AuditLog.created_at)).where(
+        AuditLog.username == username, AuditLog.action == "login", AuditLog.ip == ip))
+    since_ip = max(since, last_ok) if last_ok else since
+    per_ip = db.scalar(select(func.count()).select_from(AuditLog).where(
+        AuditLog.username == username, AuditLog.action == "login_failed",
+        AuditLog.ip == ip, AuditLog.created_at > since_ip)) or 0
+    if per_ip >= MAX_FAILS_PER_USER_IP:
+        return True
+    total = db.scalar(select(func.count()).select_from(AuditLog).where(
+        AuditLog.username == username, AuditLog.action == "login_failed", AuditLog.created_at > since)) or 0
+    return total >= MAX_FAILS_PER_USER

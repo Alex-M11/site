@@ -34,6 +34,7 @@ class Config:
     desktop_network: str = field(default_factory=lambda: os.environ.get("CD_DESKTOP_NETWORK", "cd_desktops"))
     desktop_port: int = field(default_factory=lambda: _int("CD_DESKTOP_PORT", 6901))
     desktop_user: str = field(default_factory=lambda: os.environ.get("CD_DESKTOP_USER", "kasm_user"))
+    desktop_viewer: str = field(default_factory=lambda: os.environ.get("CD_DESKTOP_VIEWER", "kasm_viewer"))
     desktop_uid: int = field(default_factory=lambda: _int("CD_DESKTOP_UID", 1000))
     container_files_path: str = field(default_factory=lambda: os.environ.get(
         "CD_CONTAINER_FILES_PATH", "/home/kasm-user/Мої_файли"))
@@ -49,8 +50,20 @@ class Config:
     demo_seed: bool = field(default_factory=lambda: _bool("CD_DEMO_SEED", False))
     image_tag: str = field(default_factory=lambda: os.environ.get("CD_KASM_TAG", "1.17.0"))
     idle_check_seconds: int = field(default_factory=lambda: _int("CD_IDLE_CHECK_SECONDS", 60))
+    api_docs: bool = field(default_factory=lambda: _bool("CD_API_DOCS", True))
     background_tasks: bool = field(default_factory=lambda: _bool("CD_BACKGROUND_TASKS", True))
     max_upload_mb: int = field(default_factory=lambda: _int("CD_MAX_UPLOAD_MB", 200))
+    # Вхід через пошту коледжу (OpenID Connect) — див. app/oidc.py
+    oidc_issuer: str = field(default_factory=lambda: os.environ.get("CD_OIDC_ISSUER", ""))
+    oidc_client_id: str = field(default_factory=lambda: os.environ.get("CD_OIDC_CLIENT_ID", ""))
+    oidc_client_secret: str = field(default_factory=lambda: os.environ.get("CD_OIDC_CLIENT_SECRET", ""))
+    oidc_allowed_domains: set[str] = field(default_factory=lambda: {
+        d.strip().lower() for d in os.environ.get("CD_OIDC_ALLOWED_DOMAINS", "").split(",") if d.strip()})
+    oidc_auto_create: bool = field(default_factory=lambda: _bool("CD_OIDC_AUTO_CREATE", False))
+    oidc_label: str = field(default_factory=lambda: os.environ.get("CD_OIDC_LABEL", "Увійти через пошту коледжу"))
+    public_url: str = field(default_factory=lambda: os.environ.get("CD_PUBLIC_URL", "").rstrip("/"))
+    trusted_proxies: set[str] = field(default_factory=lambda: {
+        p.strip() for p in os.environ.get("CD_TRUSTED_PROXIES", "127.0.0.1,::1").split(",") if p.strip()})
 
     def __post_init__(self) -> None:
         if not self.host_storage_root:

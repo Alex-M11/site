@@ -13,17 +13,39 @@ RUN (apt-get update || true) \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       python3 python3-pip python3-venv python3-tk \
       build-essential gdb cmake \
-      nodejs npm \
       default-jdk-headless \
-      git curl unzip sqlite3 \
+      git curl gnupg unzip sqlite3 \
  && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Розширення VS Code для студентів (ставимо в профіль за замовчуванням).
+# Node.js LTS з офіційного репозиторію NodeSource (у репозиторіях Ubuntu 22.04 — застаріла v12).
+# Якщо репозиторій недоступний, ставимо системний Node.js, щоб збірка не зупинялася.
+ARG NODE_MAJOR=22
+RUN set -e; mkdir -p /etc/apt/keyrings; \
+    if curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+         | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg; then \
+      echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list; \
+    else \
+      echo "УВАГА: NodeSource недоступний — буде встановлено Node.js з репозиторію Ubuntu (стара версія)"; \
+      rm -f /etc/apt/keyrings/nodesource.gpg; \
+    fi; \
+    (apt-get update || true); \
+    if [ -f /etc/apt/sources.list.d/nodesource.list ]; then \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs; \
+    else \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs npm; \
+    fi; \
+    apt-get clean; rm -rf /var/lib/apt/lists/*; node --version
+
+# Розширення VS Code для студентів (ставимо в профіль за замовчуванням). Потрібен доступ до
+# marketplace.visualstudio.com; без нього образ збереться, але без розширень — це видно в лозі збірки.
 RUN mkdir -p $HOME/.vscode/extensions \
- && (code --no-sandbox --user-data-dir /tmp/vscode-root --extensions-dir $HOME/.vscode/extensions \
-      --install-extension ms-python.python \
-      --install-extension ms-vscode.cpptools \
-      --install-extension ms-ceintl.vscode-language-pack-uk || true) \
+ && if ! code --no-sandbox --user-data-dir /tmp/vscode-root --extensions-dir $HOME/.vscode/extensions \
+        --install-extension ms-python.python \
+        --install-extension ms-vscode.cpptools \
+        --install-extension ms-ceintl.vscode-language-pack-uk; then \
+      echo "УВАГА: розширення VS Code не встановлено (немає доступу до marketplace?)"; \
+    fi \
  && rm -rf /tmp/vscode-root
 
 # Ярлик на робочому столі до персональної папки, яку портал монтує в ~/Мої_файли.

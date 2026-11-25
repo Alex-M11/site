@@ -6,7 +6,7 @@ import secrets
 from datetime import timedelta
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .audit import audit
@@ -15,8 +15,9 @@ from .db import db_session
 from .drivers import DesktopSpec, DriverError, get_driver
 from .models import (
     ACTIVE_STATES, ROLE_ADMIN, ROLE_STUDENT, ROLE_TEACHER, S_CREATING, S_ERROR, S_PAUSED, S_RUNNING,
-    S_STOPPED, DesktopSession, Template, User, utcnow,
+    S_STOPPED, DesktopSession, RevokedToken, Template, User, utcnow,
 )
+from . import quota
 from .settings_store import get_setting
 from .storage import host_home_dir
 
@@ -125,7 +126,8 @@ def provision(session_id: int) -> None:
         db.commit()
 
 
-def start_session(db: Session, user: User, template: Template, request=None) -> tuple[DesktopSession, bool]:
+def start_session(db: Session, user: User, template: Template, request=None,
+                  actor: User | None = None) -> tuple[DesktopSession, bool]:
     """Запустити стіл або повернутися до вже відкритого. Повертає (сесія, чи потрібне створення контейнера)."""
     if not can_use_template(user, template):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Це середовище недоступне для вашої групи")
@@ -138,9 +140,10 @@ def start_session(db: Session, user: User, template: Template, request=None) -> 
         db.commit()
         return sess, False
     if sess is not None and sess.status == S_PAUSED:
-        return resume_session(db, user, sess, request), False
+        return resume_session(db, actor or user, sess, request), False
 
     check_capacity(db, user)
+    quota.ensure_can_start(db, user)
     needs_provision = True
     if sess is None:
         sess = DesktopSession(user_id=user.id, template_id=template.id,
@@ -163,7 +166,9 @@ def start_session(db: Session, user: User, template: Template, request=None) -> 
         sess.error = ""
         sess.container_name = _new_container_name(user, template)
     sess.last_activity = utcnow()
-    audit(db, "session_start", user, f"{template.name} (сесія {sess.id})", request)
+    who = f", запустив {actor.username}" if actor and actor.id != user.id else ""
+    audit(db, "session_start", actor or user, f"{template.name} (сесія {sess.id}, студент {user.username}{who})",
+          request)
     db.commit()
     return sess, needs_provision
 
@@ -209,6 +214,7 @@ def reset_session(db: Session, actor: User, sess: DesktopSession, request=None) 
     """Скинути стіл до початкового стану: новий контейнер з образу, «Мої файли» лишаються."""
     if sess.status not in ACTIVE_STATES:
         check_capacity(db, sess.user)
+        quota.ensure_can_start(db, sess.user)
     if sess.container_id:
         get_driver().remove(sess.container_id)
     sess.container_id = None
@@ -266,12 +272,40 @@ def _describe(sess: DesktopSession) -> str:
 
 
 # --- фонове обслуговування -------------------------------------------------------
+def _over_disk_limits(db: Session, sess: DesktopSession, driver, container_limit: int,
+                      measured: set[int], result: dict) -> bool:
+    """Зупинити стіл, якщо студент перевищив жорстку межу квоти або контейнер розрісся."""
+    user = sess.user
+    if user.id not in measured and quota.needs_measure(user):
+        quota.measure(user)
+        measured.add(user.id)
+    if (user.disk_used_bytes or 0) > quota.hard_limit_bytes(db, user):
+        stop_session(db, None, sess, reason="session_quota_stop")
+        sess.error = ("Стіл зупинено: папка «Мої файли» значно перевищила квоту. "
+                      "Видаліть зайве в розділі «Мої файли» і запустіть стіл знову.")
+        result["disk_stopped"] += 1
+        return True
+    size = driver.disk_usage(sess.container_id) if sess.container_id else None
+    if size is not None and size > container_limit:
+        stop_session(db, None, sess, reason="session_disk_stop")
+        # Помилка → наступний запуск створить контейнер заново (дані поза «Моїми файлами» зникнуть).
+        sess.status = S_ERROR
+        sess.error = (f"Стіл зайняв понад {container_limit // quota.MB} МБ на диску сервера і був зупинений. "
+                      "Наступний запуск створить його заново; «Мої файли» збережено.")
+        result["disk_stopped"] += 1
+        return True
+    return False
+
+
+
 def maintenance(db: Session) -> dict:
     """Автовимкнення при простої й узгодження стану БД із Docker. Викликається раз на хвилину."""
     now = utcnow()
     idle_cutoff = now - timedelta(minutes=get_setting(db, "idle_timeout_minutes"))
     driver = get_driver()
-    result = {"idle_stopped": 0, "synced": 0, "failed": 0}
+    result = {"idle_stopped": 0, "synced": 0, "failed": 0, "disk_stopped": 0}
+    container_limit = get_setting(db, "max_container_disk_mb") * quota.MB
+    measured: set[int] = set()
     sessions = db.scalars(select(DesktopSession).where(DesktopSession.status.in_(ACTIVE_STATES))).all()
     for sess in sessions:
         if sess.status == S_CREATING:
@@ -281,6 +315,8 @@ def maintenance(db: Session) -> dict:
                 result["failed"] += 1
             continue
         real = driver.status(sess.container_id) if sess.container_id else "missing"
+        if real == "unknown":
+            continue
         if real in ("stopped", "missing"):
             sess.status = S_STOPPED
             sess.host = sess.port = None
@@ -290,8 +326,12 @@ def maintenance(db: Session) -> dict:
         elif sess.last_activity < idle_cutoff:
             stop_session(db, None, sess, reason="session_idle_stop")
             result["idle_stopped"] += 1
+        elif _over_disk_limits(db, sess, driver, container_limit, measured, result):
+            pass
         elif real != sess.status:
             sess.status = real
             result["synced"] += 1
+    # Відкликані токени, термін яких минув, більше не потрібні.
+    db.execute(delete(RevokedToken).where(RevokedToken.expires_at < now))
     db.commit()
     return result

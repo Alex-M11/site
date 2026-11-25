@@ -3,18 +3,20 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import checks
 from ..audit import audit
 from ..db import get_db
 from ..deps import current_user, require_teacher
 from ..models import ROLE_ADMIN, ROLE_STUDENT, Assignment, Group, Submission, Template, User, utcnow
 from ..serializers import assignment_out, submission_out
 from ..sessions_service import teacher_group_ids
+from ..settings_store import get_setting
 from ..storage import StorageError, copy_submission, safe_path, submission_dir
 
 router = APIRouter(prefix="/api/assignments", tags=["assignments"])
@@ -26,6 +28,10 @@ class AssignmentIn(BaseModel):
     group_id: int
     template_id: int | None = None
     due_at: datetime | None = None
+    check_script: str = Field(default="", max_length=20000)
+    check_image: str = Field(default="", max_length=255)
+    check_timeout: int = Field(default=60, ge=5, le=600)
+    show_check_to_student: bool = True
 
 
 class SubmitIn(BaseModel):
@@ -73,13 +79,12 @@ def list_assignments(user: User = Depends(current_user), db: Session = Depends(g
     q = select(Assignment).order_by(Assignment.created_at.desc())
     if user.role != ROLE_ADMIN:
         q = q.where(Assignment.group_id.in_(teacher_group_ids(user) or {-1}))
-    result = []
-    for a in db.scalars(q):
-        subs = db.scalars(select(Submission).where(Submission.assignment_id == a.id)).all()
-        result.append(assignment_out(a, stats={
-            "students": len(a.group.students), "submitted": len(subs),
-            "graded": sum(1 for s in subs if s.grade)}))
-    return result
+    return [assignment_out(a, stats=_stats(db, a)) for a in db.scalars(q)]
+
+
+@router.get("/check-images")
+def check_images(user: User = Depends(require_teacher), db: Session = Depends(get_db)):
+    return get_setting(db, "check_images")
 
 
 def _validate(db: Session, user: User, data: AssignmentIn) -> None:
@@ -89,19 +94,38 @@ def _validate(db: Session, user: User, data: AssignmentIn) -> None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Можна створювати завдання лише для своїх груп")
     if data.template_id is not None and db.get(Template, data.template_id) is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Шаблон не знайдено")
+    if data.check_script.strip():
+        allowed = get_setting(db, "check_images")
+        if (data.check_image or checks.DEFAULT_IMAGE) not in allowed:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                f"Образ перевірки має бути з дозволеного списку: {', '.join(allowed)}")
+
+
+def _apply(a: Assignment, data: AssignmentIn) -> None:
+    a.title, a.description, a.group_id = data.title.strip(), data.description, data.group_id
+    a.template_id, a.due_at = data.template_id, _naive_utc(data.due_at)
+    a.check_script = data.check_script.replace("\r\n", "\n")
+    a.check_image = (data.check_image or checks.DEFAULT_IMAGE) if data.check_script.strip() else ""
+    a.check_timeout, a.show_check_to_student = data.check_timeout, data.show_check_to_student
+
+
+def _stats(db: Session, a: Assignment) -> dict:
+    subs = db.scalars(select(Submission).where(Submission.assignment_id == a.id)).all()
+    return {"students": len(a.group.students), "submitted": len(subs), "graded": sum(1 for s in subs if s.grade),
+            "passed": sum(1 for s in subs if s.check_status == checks.PASSED)}
 
 
 @router.post("", status_code=201)
 def create(data: AssignmentIn, request: Request, user: User = Depends(require_teacher),
            db: Session = Depends(get_db)):
     _validate(db, user, data)
-    a = Assignment(title=data.title.strip(), description=data.description, group_id=data.group_id,
-                   template_id=data.template_id, teacher_id=user.id, due_at=_naive_utc(data.due_at))
+    a = Assignment(teacher_id=user.id)
+    _apply(a, data)
     db.add(a)
     db.flush()
     audit(db, "assignment_create", user, a.title, request)
     db.commit()
-    return assignment_out(a, stats={"students": len(a.group.students), "submitted": 0, "graded": 0})
+    return assignment_out(a, stats=_stats(db, a))
 
 
 @router.put("/{assignment_id}")
@@ -109,10 +133,9 @@ def update(assignment_id: int, data: AssignmentIn, user: User = Depends(require_
            db: Session = Depends(get_db)):
     a = _get_assignment(db, user, assignment_id)
     _validate(db, user, data)
-    a.title, a.description, a.group_id = data.title.strip(), data.description, data.group_id
-    a.template_id, a.due_at = data.template_id, _naive_utc(data.due_at)
+    _apply(a, data)
     db.commit()
-    return assignment_out(a, stats={})
+    return assignment_out(a, stats=_stats(db, a))
 
 
 @router.delete("/{assignment_id}")
@@ -126,8 +149,8 @@ def delete(assignment_id: int, request: Request, user: User = Depends(require_te
 
 
 @router.post("/{assignment_id}/submit")
-def submit(assignment_id: int, data: SubmitIn, request: Request, user: User = Depends(current_user),
-           db: Session = Depends(get_db)):
+def submit(assignment_id: int, data: SubmitIn, request: Request, background: BackgroundTasks,
+           user: User = Depends(current_user), db: Session = Depends(get_db)):
     if user.role != ROLE_STUDENT:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Здавати роботи можуть лише студенти")
     a = _get_assignment(db, user, assignment_id)
@@ -141,10 +164,14 @@ def submit(assignment_id: int, data: SubmitIn, request: Request, user: User = De
         db.add(sub)
     sub.files, sub.comment, sub.submitted_at = names, data.comment, utcnow()
     sub.grade, sub.feedback, sub.graded_at = "", "", None  # повторна здача — нова перевірка
+    sub.assignment = a
+    run = checks.mark_pending(sub)
     audit(db, "submission", user, f"{a.title}: {', '.join(names)}", request)
     db.commit()
     db.refresh(sub)
-    return submission_out(sub)
+    if run:
+        background.add_task(checks.run_check, sub.id)
+    return submission_out(sub, for_student=True)
 
 
 @router.get("/{assignment_id}/submissions")
@@ -156,7 +183,32 @@ def submissions(assignment_id: int, user: User = Depends(require_teacher), db: S
         s = subs.get(student.id)
         rows.append({"student": {"id": student.id, "username": student.username, "full_name": student.full_name},
                      "submission": submission_out(s) if s else None})
-    return {"assignment": assignment_out(a, stats={}), "rows": rows}
+    return {"assignment": assignment_out(a, stats=_stats(db, a)), "rows": rows}
+
+
+@router.post("/{assignment_id}/recheck")
+def recheck_all(assignment_id: int, request: Request, background: BackgroundTasks,
+                user: User = Depends(require_teacher), db: Session = Depends(get_db)):
+    """Перевірити всі здані роботи заново (напр. після зміни скрипта)."""
+    a = _get_assignment(db, user, assignment_id)
+    subs = db.scalars(select(Submission).where(Submission.assignment_id == a.id)).all()
+    ids = [s.id for s in subs if checks.mark_pending(s)]
+    audit(db, "check_rerun", user, f"{a.title}: {len(ids)} робіт", request)
+    db.commit()
+    for sid in ids:
+        background.add_task(checks.run_check, sid)
+    return {"queued": len(ids)}
+
+
+@router.post("/submissions/{submission_id}/recheck")
+def recheck_one(submission_id: int, background: BackgroundTasks, user: User = Depends(require_teacher),
+                db: Session = Depends(get_db)):
+    sub = _get_submission(db, user, submission_id)
+    if not checks.mark_pending(sub):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "У завдання немає скрипта перевірки")
+    db.commit()
+    background.add_task(checks.run_check, sub.id)
+    return submission_out(sub)
 
 
 def _get_submission(db: Session, user: User, submission_id: int) -> Submission:

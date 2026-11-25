@@ -11,13 +11,15 @@ let session = null;
 let me = null;
 let pollTimer = null;
 let lastInteraction = Date.now();
+// Викладач за замовчуванням лише дивиться; керування вмикає явно.
+let mode = "view";
 
-const HEARTBEAT_MS = 60_000;
+const HEARTBEAT_MS = 30_000;
 const INTERACTION_WINDOW_MS = 5 * 60_000; // без дій 5 хв — heartbeat не надсилаємо, спрацює автовимкнення
 
 function showWait(text, actions = []) {
   frame.classList.add("hidden");
-  frame.removeAttribute("src");
+  frame.src = "about:blank";  // справді закрити з'єднання KasmVNC
   wait.classList.remove("hidden");
   const spinner = actions.length ? null : h("div", { class: "spinner" });
   wait.replaceChildren(h("div", {}, spinner, h("div", { style: "margin-bottom:1rem" }, text), h("div", { class: "row", style: "justify-content:center" }, actions)));
@@ -27,7 +29,7 @@ function showDesktop() {
   if (!frame.classList.contains("hidden")) return;
   wait.classList.add("hidden");
   frame.classList.remove("hidden");
-  frame.src = session.viewer_url;
+  frame.src = !session.is_owner && mode === "view" ? session.view_only_url : session.viewer_url;
   frame.addEventListener("load", hookFrameActivity, { once: true });
 }
 
@@ -56,9 +58,27 @@ function renderBar() {
   $("btn-stop").disabled = !["running", "paused"].includes(session.status);
   $("btn-submit").classList.toggle("hidden", !(session.is_owner && me && me.role === "student"));
   $("btn-files").classList.toggle("hidden", !session.is_owner);
+  const mbtn = $("btn-mode");
+  mbtn.classList.toggle("hidden", session.is_owner);
+  mbtn.textContent = mode === "view" ? "🖱 Взяти керування" : "👁 Лише перегляд";
+  renderNote();
+}
+
+function renderNote() {
   const note = $("helper-note");
-  note.classList.toggle("hidden", session.is_owner);
-  if (!session.is_owner) note.textContent = `Ви підключені до столу студента ${session.user.full_name || session.user.username}. Підключення записано в журнал.`;
+  const student = session.user.full_name || session.user.username;
+  let text = "";
+  if (!session.is_owner) {
+    text = mode === "view"
+      ? `👁 Ви переглядаєте стіл студента ${student} (без керування). Студент бачить, що ви підключені.`
+      : `🖱 Ви керуєте столом студента ${student}. Студент бачить, що ви підключені; дія записана в журнал.`;
+  } else if (session.helper) {
+    text = session.helper.mode === "control"
+      ? `🖱 Викладач ${session.helper.name} зараз керує вашим столом, щоб допомогти.`
+      : `👁 Викладач ${session.helper.name} зараз переглядає ваш стіл.`;
+  }
+  note.className = `helper-note${session.is_owner ? " student" : ""}${text ? "" : " hidden"}`;
+  note.textContent = text;
 }
 
 async function refresh() {
@@ -103,12 +123,20 @@ async function action(name) {
     if (name === "stop" && !await confirmDialog("Зупинити стіл?", "Відкриті програми буде закрито. Файли в «Мої_файли» залишаться.", "Зупинити")) return;
     await api(`/api/sessions/${sessionId}/${name}`, { method: "POST" });
     frame.classList.add("hidden");
-    frame.removeAttribute("src");
+    frame.src = "about:blank";  // справді закрити з'єднання KasmVNC
     await refresh();
     ensurePolling();
   } catch (err) { handleError(err); }
 }
 
+$("btn-mode").onclick = () => {
+  mode = mode === "view" ? "control" : "view";
+  frame.classList.add("hidden");
+  frame.src = "about:blank";  // справді закрити з'єднання KasmVNC
+  renderBar();
+  showDesktop();
+  sendHeartbeat();
+};
 $("btn-pause").onclick = () => action(session.status === "paused" ? "resume" : "pause");
 $("btn-stop").onclick = () => action("stop");
 $("btn-reset").onclick = () => action("reset");
@@ -116,14 +144,24 @@ $("btn-files").onclick = () => window.open("/#/files", "portal");
 $("btn-full").onclick = () => (frame.classList.contains("hidden") ? document.documentElement : frame).requestFullscreen?.();
 $("btn-submit").onclick = () => submitDialog({ templateId: session.template.id }).catch(handleError);
 
-setInterval(async () => {
-  if (!session || !session.is_owner || session.status !== "running") return;
-  if (document.hidden || Date.now() - lastInteraction > INTERACTION_WINDOW_MS) return;
+async function sendHeartbeat() {
+  if (!session || session.status !== "running") return;
   try {
-    const res = await api(`/api/sessions/${sessionId}/heartbeat`, { method: "POST" });
-    if (res.status !== "running") { toast("Стіл зупинено"); await refresh(); }
+    if (session.is_owner && (document.hidden || Date.now() - lastInteraction > INTERACTION_WINDOW_MS)) {
+      // студент не працює — активність не продовжуємо (спрацює автовимкнення), але банер оновлюємо
+      const info = await api(`/api/sessions/${sessionId}`);
+      session.helper = info.helper;
+      if (info.status !== "running") { toast("Стіл зупинено"); await refresh(); return; }
+    } else {
+      const res = await api(`/api/sessions/${sessionId}/heartbeat`, { method: "POST", body: { mode } });
+      if (session.is_owner) session.helper = res.helper;
+      if (res.status !== "running") { toast("Стіл зупинено"); await refresh(); return; }
+    }
+    renderNote();
   } catch { /* мережа — спробуємо пізніше */ }
-}, HEARTBEAT_MS);
+}
+
+setInterval(sendHeartbeat, HEARTBEAT_MS);
 
 (async () => {
   try { me = await api("/api/auth/me"); } catch { location.href = "/"; return; }
